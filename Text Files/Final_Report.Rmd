@@ -1,0 +1,125 @@
+---
+title: "Evaluating Offensive Tackles with Bayesian Methods"
+author: 'Josh Gen (jdg9vr@virginia.edu) and Connor Nickol (can2hr@virginia.edu)'
+date: "Big Data Bowl 2023: Metric Track"
+output: 
+  html_document:
+    number_sections: true
+    toc: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+library(tidyverse)
+library(knitr)
+library(kableExtra)
+```
+
+# Introduction
+
+Offensive linemen provide key value in a football game, which often goes unnoticed on box scores and game logs. While there are plenty of metrics and statistics for ball-handlers and defenders, there are not many commonly used statistics to evaluate offensive linemen.
+
+We create a novel scoring system for offensive linemen based on the type of rush they encounter. We note the need for different models for different rush types, as they significantly affect the evaluation of the offensive lineman on that play.
+
+We identify two common rushing techniques employed by defensive ends: bull/power rush (hereby referred to as power rush) and speed rush. A speed rush, as identified in Figure 1 below, is a rush in which the defender attempts to speed around the lineman and reach the quarterback before the lineman for a sack.
+
+![**Figure 1**: Myles Garrett, circled in red, engaging in a speed rush](./Visuals/speedrush.gif)
+
+A power rush, demonstrated in Figure 2 below, occurs when the defender attempts to overpower the lineman by pushing them back, eventually reaching and sacking the quarterback.
+
+![**Figure 2**: Myles Garrett, circled in red, engaging in a power rush](./Visuals/powerrush.gif)
+
+The figures above make it clear that offensive linemen must be assessed differently for speed and power rushes. For blocking against speed rushing, the key for a lineman is to have a quick "get-off time", or time to move back from their initial position on the line of scrimmage. The first couple moments of the play are crucial when the edge rusher is speed rushing, as the offensive lineman must move back far enough and quick enough to block a defender attempting to get around the lineman. For power rushing, the key for the lineman is to not allow the defender to overpower them, or not give up any distance to the quarterback. Against power rushing, a lineman is successful if they do not allow the rusher to push them back towards the quarterback. This will be more formally defined in the following section.
+
+# Methods
+
+We seek to model the performance of offensive tackles by first modeling the defender's rush type (speed or power), then modeling individual tackle performance, holding all other important factors constant. We chose to focus only on offensive tackles and not evaluate other positions because their blocking can often be more isolated from the center and guards, and double teams and stunts are less common for tackles. At a high level, our project methods can be viewed in three phases: data cleaning, speed vs. power modeling, and individual offensive tackle modeling. Figure 3 below provides the overall flow of our project.
+
+![**Figure 3**: Model framework with three steps](workflow.png)
+
+## Data Cleaning
+
+Using the expansive, eight-week NFL player tracking data, we first cleaned and filtered the data. We removed the following events from the data for our analysis:
+
+  - Chip blocks
+  - QB scrambles
+  - Non-standard QB dropbacks
+  - All positions other than QBs, tackles, and edge rusher
+  - Edge rushers who were also in coverage
+  - Edge rushers who disengaged with the tackle (stunt block or other)
+
+Note that a chip block occurs when the running back or tight end "chips" the defender, aiding the lineman, before running their route, thereby aiding them in blocking the defender. Each of these events change the interaction between the lineman and the defender, and would skew our model if left in. We also flipped the position of the right tackles and left ends around the ball so all the tackle-end interactions are on a similar path and direction for modeling. 
+
+## Speed vs. Power Rush Modeling
+
+### Variables
+
+Once the data was prepared, we turned to creating a model to determine whether a specific rush was a speed or power rush. Because there was no label in the data for rush type, this would require an unsupervised model. As a means of evaluating performance of the model, we randomly selected 10 plays, watched the game film, and labeled the rush type for each edge rusher (20 rushers) to create test data. We created four variables for each rush for our models to use in determining rush type:
+
+  1. Mean_tackle_end_dist: Average distance between the tackle and edge rusher on the play
+  2. Mean_tackle_end_facing: Average difference between the angle of tackle and rusher (0 indicates facing each other, 180 is facing in opposite directions)
+  3. End_dist_travel: Total distance traveled by the edge rusher
+  4. Mean_end_speed: Average speed of the edge rusher during the play
+
+### K-Means Clustering and Gaussian Mixture Model
+
+Using these four variables, we created both a K-Means Clustering Model and a Gaussian Mixture Model with two clusters to model rush type. They both correctly predicted 15 of the 20 test plays for an approximate 75% test accuracy. While this accuracy seems low on its face, the five plays it inaccurately classified were difficult to determine in the film and were likely more representative of outliers in the data.
+
+We selected the Gaussian Mixture Model (GMM) to classify power and speed plays because GMMs provide a probability of each observation belonging to each class. This allowed us to filter out rushes that the model was uncertain about (classified as between 50 and 55% probability). The table below shows the centers of the variables for power and speed rushes, which have notably different Mean_tackle_end_facing and End_dist_travel centers.
+
+
+```{r}
+table <- data.frame(Rush_Type=c("Power", "Speed"),
+                    Mean_tackle_end_dist=c(1.16615885, 1.15544887),
+                    Mean_tackle_end_facing=c(26.1976727, 61.32940427),
+                    End_dist_travel = c(7.27401843, 9.67472515),
+                    Mean_end_speed = c(2.78494659, 2.98266389))
+
+kable(table, caption="Figure 4: Centers of each variable for power and speed rush types from the Gaussian Mixture Model")%>% kable_styling(bootstrap_options = c("striped", "hover"))%>%row_spec(1:2,bold=T,hline_after = T)
+```
+
+
+To demonstrate an instance of the model in action, we will examine a play from our test set, in the third quarter of the October 10, 2021 Cardinals vs. 49ers game. We removed all players except the quarterback, tackles, and edge rushers for the animation below. 
+
+![**Figure 5**: Animated play with just tackles, quarterback, and edge rushers demonstrating speed and power rush](rush_type_ex.gif)
+
+The model correctly classifies the left edge rusher (jersey number 98) as a speed rush with 69% probability and the right edge rusher (jersey number 56) as a power rush with 92% probability. The model was successful in predicting rush type, and we will use its classifications in our Bayesian Hierarchical Model to model power and speed rushes separately.
+
+## Bayesian Hierarchical Model
+
+With the rush type classifications from the Gaussian Mixture Model, we used Bayesian Hierarchical Models, with additional priors on each of the offensive tackle's intercepts to penalize low sample sizes. We chose Bayesian Hierarchical Models because it will do a better job at accounting for small smaple sizes of some tackles, while still individualizing results. Since success for an offensive tackle is measured differently for defending speed and power rushing, we created two different models measuring different responses.
+
+Both models use the following equation, but with different responses and predictors:
+
+$$
+\hat{y}_{i} = \hat{\beta}_{0[j]} + \hat{\beta}_kX_i
+$$
+
+In this equation, i is each observation, k is each predictor, and j is each offensive tackle. The model is a Bayesian Hierarchical Model as each $\beta$ has an uninformed prior, with additional priors on the mean and standard deviation of each $\beta_0$ (for each offensive tackle). Our results section uses the standardized version of the outputted $\beta_0$'s (scaled to the mean) to score each offensive lineman against power rushing and speed rushing. 
+
+### Power Rushing Model
+
+For power rushing, the offensive lineman is engaged by the rusher, who attempts to push them back and overpower them, until they are able to sack the quarterback. Because of this, we define the response variable as the percentage of space to the quarterback given up by the offensive lineman on the play (which is also normally distributed through the data). We determined that the "starting" point should not be the line of scrimmage, but rather the first contact of the rusher and the tackle.
+
+For example, if the offensive tackle gives up a sack, this variable would be 1 because they gave up 100% of the distance to the quarterback. Likewise, if they held the defender to the same position for the whole play, this variable would be 0 because they gave up 0% of the distance to the quarterback. 
+
+In measuring the percent of yards given up, we include a varying intercept for each offensive tackle, and four predictors to hold constant in the variable. These predictors are end power rush percentage, end height, end weight, play length, and a binary indicator for obvious passing situations. We chose these predictors because they may affect the play beyond the skill of the offensive lineman. 
+
+### Speed Rushing Model
+
+For speed rushing, the offensive tackle must prevent the rusher from going around them, typically on the outside, by moving back quickly. This "get off time" is the key to our speed rushing model. We attempt to capture lineman performance against speed rushing by examining the amount of yards moved by the tackle in the first second of the play after the ball snap. We feel that if a tackle is able to move far enough back in the first second of the play, they set themselves up to be able to successfully defend against the speed rush. Accordingly, distance moved in the first second of the play is our response variable for speed rushing.
+
+Similarly to the power rushing model, we include a varying intercept for each offensive tackle, but only two predictors: the percentage that the defender speed rushes (as opposed to power rushing) and a binary indicator indicating an obvious pass play.
+
+# Results
+
+# Discussion
+
+Our immediate thoughts on how to expand upon our work is to look at the salary and contract situation of the players who performed well in our model, much like what was done in this paper by Byanna et al. Ideally you would be able to use our model to evaluate the potential of draft prospects, but there is not enough data collection at the college level in order to do this. Instead, it would be beneficial to use our model to identify backup tackles who could be potential trade candidates, or signed for little money in free agency. These players could be brought in for little investment but, if developed properly, could benefit a team tremendously.
+
+While our analysis could certainly be extended to centers and guards, some important changes would be required. Double teams are much more common and often these players need to pick up stunting lineman and blitzing linebackers. Their roles from play to play are much more nuanced than the tackle so we would need to use different techniques in selecting what plays to look at.
+
+Another potential use of our work would be related to edge rusher specific game planning. Using our clustering, an offensive tackle would instantly be able to know the tendencies of the edge rushers he is facing each week. Along the overall rush move percentages, one could look at specific down and distances and know exactly what to expect come game time. This could save countless hours of coach/player film watching freeing them up to work on other aspects of preparing for a game.
+
+
+
